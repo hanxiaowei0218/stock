@@ -25,7 +25,7 @@ def _patched_request(self, method, url, **kw):
     headers = kw.get("headers") or {}
     headers["User-Agent"] = _UA
     kw["headers"] = headers
-    kw.setdefault("timeout", 20)
+    kw.setdefault("timeout", 8)
     return _orig_request(self, method, url, **kw)
 
 
@@ -86,7 +86,7 @@ def _mock_spot(codes: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _retry(func, *args, tries: int = 3, delay: float = 1.0, **kwargs):
+def _retry(func, *args, tries: int = 2, delay: float = 0.5, **kwargs):
     """通用重试包装，全部失败返回 None。"""
     for i in range(tries):
         try:
@@ -151,6 +151,14 @@ def _spot_snapshot() -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
     return df
+
+
+def get_spot_snapshot() -> pd.DataFrame | None:
+    """公开：返回全市场 A 股实时快照（单次请求，运行内缓存）。"""
+    if _MOCK:
+        codes = [f"6{str(i).zfill(5)}" for i in range(100, 130)]
+        return _mock_spot(codes)
+    return _spot_snapshot()
 
 
 def get_realtime_price(code: str) -> float | None:
