@@ -9,6 +9,15 @@ on:
     - cron: '0,30 5-6 * * 1-5'
     - cron: '0 7 * * 1-5'
   workflow_dispatch:        # 允许在 Actions 页面手动触发
+    inputs:
+      force:
+        description: '忽略交易时段限制，强制跑一轮（常用于手动测试/盘后验证真实数据）'
+        type: boolean
+        default: false
+      mock:
+        description: '使用离线模拟数据（不联网），仅验证逻辑'
+        type: boolean
+        default: false
 
 # 允许工作流回写数据文件到仓库
 permissions:
@@ -36,7 +45,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 执行一轮交易决策
-        run: python main.py
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ github.event.inputs.mock }}" = "true" ]; then ARGS="$ARGS --mock"; fi
+          python main.py $ARGS
         env:
           TZ: Asia/Shanghai
 
