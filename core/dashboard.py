@@ -1,0 +1,236 @@
+"""
+仪表盘生成器 —— 输出自包含 HTML（数据内嵌，双击即看，无需服务器）。
+
+包含：收益曲线、绩效摘要、当前持仓、交易流水、事件提醒卡片。
+配色遵循 A 股习惯：涨=红，跌=绿。
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime
+
+import config
+
+
+def _load(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def generate(prices: dict | None = None,
+             macro: dict | None = None,
+             alerts: list | None = None):
+    """读取所有数据文件，渲染仪表盘到 config.DASHBOARD_FILE。"""
+    portfolio = _load(config.PORTFOLIO_FILE, {"cash": config.INITIAL_CASH, "holdings": {}})
+    trades = _load(config.TRADES_FILE, [])
+    equity = _load(config.EQUITY_FILE, [])
+    events = _load(config.EVENTS_FILE, {})
+    macro = macro or events.get("macro", {})
+    alerts = alerts if alerts is not None else events.get("alerts", [])
+    prices = prices or {}
+
+    payload = {
+        "portfolio": portfolio,
+        "trades": trades[-100:][::-1],   # 最近100条，倒序
+        "equity": equity,
+        "macro": macro,
+        "alerts": alerts,
+        "prices": prices,
+        "config": {
+            "initial_cash": config.INITIAL_CASH,
+            "stop_loss": config.STOP_LOSS,
+            "take_profit": config.TAKE_PROFIT,
+            "max_holdings": config.MAX_HOLDINGS,
+        },
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    html = _TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
+    os.makedirs(os.path.dirname(config.DASHBOARD_FILE), exist_ok=True)
+    with open(config.DASHBOARD_FILE, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"[dashboard] 已生成 {config.DASHBOARD_FILE}")
+
+
+_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>A股智能模拟交易 · 仪表盘</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{--up:#e24b4a;--down:#1d9e75;--bg:#f7f7f8;--card:#fff;--line:#ececf0;--txt:#1a1a1a;--muted:#8a8a94;--accent:#3565c4;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);padding:20px;line-height:1.5}
+  .wrap{max-width:1100px;margin:0 auto}
+  h1{font-size:20px;font-weight:600;margin-bottom:2px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .grid{display:grid;gap:14px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card .k{color:var(--muted);font-size:12px;margin-bottom:6px}
+  .card .v{font-size:22px;font-weight:600}
+  .sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+  .sec h2{font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:right;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  .up{color:var(--up)}.down{color:var(--down)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500}
+  .tag.buy{background:#fde8e8;color:var(--up)}.tag.sell{background:#e3f5ee;color:var(--down)}
+  .badge{padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500}
+  .alert{border:1px solid #f0c0c0;background:#fdf3f3;border-radius:10px;padding:14px;margin-bottom:10px}
+  .alert .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px}
+  .alert .name{font-weight:600;font-size:14px}
+  .alert .logic{font-size:13px;color:#444;margin:6px 0}
+  .alert .meta{font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap}
+  .u-高{color:#b46b00}.u-极高{color:var(--up)}.u-中{color:var(--muted)}
+  .empty{color:var(--muted);font-size:13px;padding:10px 0}
+  .macro{font-size:13px;padding:10px 12px;border-radius:10px;background:#f2f5fb;border:1px solid #dde6f5}
+  .disc{font-size:12px;color:var(--muted);margin-top:20px;padding:14px;background:#fafafa;border:1px dashed var(--line);border-radius:10px}
+  canvas{max-height:260px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>A股智能模拟交易 · 仪表盘</h1>
+  <div class="sub" id="genTime"></div>
+
+  <div class="grid cards" id="cards"></div>
+
+  <div class="sec">
+    <h2>净值曲线</h2>
+    <canvas id="equityChart"></canvas>
+  </div>
+
+  <div class="sec">
+    <h2>宏观情绪（防御性调节）</h2>
+    <div id="macroBox"></div>
+  </div>
+
+  <div class="sec">
+    <h2>热点联动提醒 <span style="font-size:12px;color:var(--muted);font-weight:400">· 只提醒不自动买入，请自行判断</span></h2>
+    <div id="alerts"></div>
+  </div>
+
+  <div class="sec">
+    <h2>当前持仓</h2>
+    <div id="holdings"></div>
+  </div>
+
+  <div class="sec">
+    <h2>交易流水（最近100条）</h2>
+    <div id="trades"></div>
+  </div>
+
+  <div class="disc">
+    风险提示：本系统为<b>模拟盘</b>，使用真实行情 + 虚拟资金，所有交易均不涉及真实资金。技术指标与事件分析仅供研究，不构成投资建议。
+    热点事件驱动型行情具有<b>强时效性与高不确定性</b>，历史表现不代表未来收益。
+  </div>
+</div>
+
+<script>
+const D = __DATA__;
+const fmt = n => (n==null||isNaN(n))?'-':Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2});
+const cls = n => n>0?'up':(n<0?'down':'');
+const sign = n => (n>0?'+':'')+fmt(n);
+
+document.getElementById('genTime').textContent = '更新于 '+D.generated_at+' · 初始本金 ¥'+fmt(D.config.initial_cash);
+
+// 概览卡片
+const eq = D.equity;
+const cur = eq.length? eq[eq.length-1].total : D.config.initial_cash;
+const ret = (cur/D.config.initial_cash-1)*100;
+const mv = eq.length? eq[eq.length-1].market_value : 0;
+let peak=D.config.initial_cash,dd=0;
+eq.forEach(e=>{peak=Math.max(peak,e.total);dd=Math.min(dd,(e.total-peak)/peak);});
+const sells=D.trades.filter(t=>t.side==='sell'&&t.pnl!=null);
+const wins=sells.filter(t=>t.pnl>0);
+const winRate=sells.length?(wins.length/sells.length*100):0;
+const cards=[
+  ['总资产','¥'+fmt(cur), cls(ret)],
+  ['累计收益率',sign(ret)+'%', cls(ret)],
+  ['持仓市值','¥'+fmt(mv),''],
+  ['可用现金','¥'+fmt(D.portfolio.cash),''],
+  ['最大回撤',fmt(dd*100)+'%', dd<0?'down':''],
+  ['胜率',fmt(winRate)+'% ('+wins.length+'/'+sells.length+')',''],
+];
+document.getElementById('cards').innerHTML = cards.map(c=>
+  `<div class="card"><div class="k">${c[0]}</div><div class="v ${c[2]}">${c[1]}</div></div>`).join('');
+
+// 净值曲线
+if(eq.length){
+  new Chart(document.getElementById('equityChart'),{
+    type:'line',
+    data:{labels:eq.map(e=>e.date),datasets:[{
+      label:'总资产',data:eq.map(e=>e.total),
+      borderColor:'#3565c4',backgroundColor:'rgba(53,101,196,.08)',
+      fill:true,tension:.25,pointRadius:0,borderWidth:2}]},
+    options:{plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'¥'+fmt(v)}}}}
+  });
+}else{document.getElementById('equityChart').outerHTML='<div class="empty">暂无净值数据，运行后生成</div>';}
+
+// 宏观情绪
+const m=D.macro||{};
+if(m.label){
+  const toneCls = m.label.includes('多')?'up':(m.label.includes('空')?'down':'');
+  document.getElementById('macroBox').innerHTML=
+    `<div class="macro">当前宏观情绪：<b class="${toneCls}">${m.label}</b>（多空净分 ${m.score||0}），新开仓预算系数 <b>${m.factor??1}</b>。`+
+    (m.factor<1?' 系统已<b>自动收缩</b>当日新开仓仓位以防御风险。':' 正常开仓。')+'</div>'+
+    ((m.headlines&&m.headlines.length)?'<table style="margin-top:10px"><tr><th>影响新闻</th><th>倾向</th></tr>'+
+      m.headlines.map(h=>`<tr><td>${h.text}</td><td><span class="tag ${h.tone==='利好'?'buy':'sell'}">${h.tone}</span></td></tr>`).join('')+'</table>':'');
+}else{document.getElementById('macroBox').innerHTML='<div class="empty">暂无宏��数据</div>';}
+
+// 热点提醒
+const al=D.alerts||[];
+document.getElementById('alerts').innerHTML = al.length? al.map(a=>
+  `<div class="alert">
+     <div class="top">
+       <span class="name">${a.concept} <span class="up">+${a.change}%</span></span>
+       <span class="badge u-${a.uncertainty}">不确定性：${a.uncertainty}</span>
+     </div>
+     <div class="logic">${a.logic}</div>
+     <div class="meta">
+       <span>龙头：${a.leader}${a.leader_code?'('+a.leader_code+')':''}</span>
+       <span>时效：约${a.ttl}个交易日</span>
+       <span>熄火信号：${a.fade_signal}</span>
+     </div>
+   </div>`).join('') : '<div class="empty">当前无热点异动提醒</div>';
+
+// 持仓
+const h=D.portfolio.holdings||{};
+const codes=Object.keys(h);
+if(codes.length){
+  let rows=codes.map(c=>{
+    const p=h[c];const price=D.prices[c]||p.last_price||p.cost;
+    const ret=(price/p.cost-1)*100;const val=price*p.shares;
+    return `<tr><td>${p.name}(${c})</td><td>${p.shares}</td><td>${fmt(p.cost)}</td>
+      <td>${fmt(price)}</td><td>¥${fmt(val)}</td><td class="${cls(ret)}">${sign(ret)}%</td></tr>`;
+  }).join('');
+  document.getElementById('holdings').innerHTML=
+    `<table><tr><th>股票</th><th>持股</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏</th></tr>${rows}</table>`;
+}else{document.getElementById('holdings').innerHTML='<div class="empty">当前空仓</div>';}
+
+// 交易流水
+if(D.trades.length){
+  let rows=D.trades.map(t=>
+    `<tr><td>${t.time||t.date}</td><td>${t.name}(${t.code})</td>
+     <td><span class="tag ${t.side}">${t.side==='buy'?'买入':'卖出'}</span></td>
+     <td>${fmt(t.price)}</td><td>${t.shares}</td><td>¥${fmt(t.amount)}</td>
+     <td class="${t.pnl!=null?cls(t.pnl):''}">${t.pnl!=null?sign(t.pnl):'-'}</td>
+     <td style="text-align:left;color:var(--muted);font-size:12px">${t.reason||''}</td></tr>`).join('');
+  document.getElementById('trades').innerHTML=
+    `<table><tr><th>时间</th><th>股票</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>原因</th></tr>${rows}</table>`;
+}else{document.getElementById('trades').innerHTML='<div class="empty">暂无交易记录</div>';}
+</script>
+</body>
+</html>
+"""
